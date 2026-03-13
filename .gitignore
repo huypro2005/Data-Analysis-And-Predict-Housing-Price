@@ -1,0 +1,8 @@
+*.env
+venv
+*.exe
+*.pkl
+models
+test.py
+.idea
+__pycache__
