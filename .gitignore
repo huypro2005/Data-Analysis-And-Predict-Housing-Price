@@ -6,3 +6,6 @@ models
 test.py
 .idea
 __pycache__
+prompt.txt
+goong.py
+handle_data.py

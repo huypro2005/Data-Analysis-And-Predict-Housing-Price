@@ -36,18 +36,20 @@ REAL_ESTATE_ = {
     'nhà biệt thự, liền kề': 3, 'nhà mặt phố': 4, 'bán đất': 7,
 }
 
-SESSION_TIMEOUT_MINUTES = 30
+SESSION_TIMEOUT_MINUTES = 30 #Thời gian một phiên chat với bot
 
 # ---------------------------------------------------------------------------
 # In-memory session store
 # ---------------------------------------------------------------------------
 
-_sessions: dict[str, "SessionData"] = {}
+_sessions: dict[str, "SessionData"] = {}  # Lưu trữ tất cả session
 
 
 @dataclass
-class ChatState:
+class ChatState:  # Thu thập thông tin nhà đất từ người dùng
+
     loai_nha_dat: Optional[int] = None
+    <!-- loai_nha_dat_text: Optional[text] = None -->
     dia_chi_text: Optional[str] = None
     dia_chi_code: Optional[int] = None
     dien_tich: Optional[float] = None
@@ -58,18 +60,17 @@ class ChatState:
     toa_do_y: Optional[float] = None
     last_geocoded_address: Optional[str] = None
     auto_filled: set = field(default_factory=set)
-    is_update_address: bool = True  # True = cần geocode lại
 
 
 @dataclass
-class SessionData:
-    state: ChatState
-    last_activity: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+class SessionData: # Một phiên hoạt động với bot
+    state: ChatState  # Lưu trữ thông tin thu thập
+    last_activity: datetime = field(default_factory=lambda: datetime.now(timezone.utc))  # Thời gian hoạt động gần nhất
 
-    def touch(self):
+    def touch(self):  # Đánh dấu hoạt động, cập nhật thời gian
         self.last_activity = datetime.now(timezone.utc)
 
-    def is_expired(self) -> bool:
+    def is_expired(self) -> bool: # Check hết hạn
         delta = datetime.now(timezone.utc) - self.last_activity
         return delta.total_seconds() > SESSION_TIMEOUT_MINUTES * 60
 
@@ -78,7 +79,7 @@ class SessionData:
 # Pydantic models
 # ---------------------------------------------------------------------------
 
-class ChatRequest(BaseModel):
+class ChatRequest(BaseModel):  # Request body từ người dùng, gửi session và message
     session_id: Optional[str] = None
     message: str
 
@@ -87,10 +88,39 @@ class ChatRequest(BaseModel):
 # Helpers (ported từ test.py)
 # ---------------------------------------------------------------------------
 
-def _norm_text(s: str) -> str:
+# ---------------------------------------------------------------------------
+# User gõ bằng Unikey kiểu NFD
+# user_msg = "căn hộ chung cư"   # c-a-ă-n = NFD (ă tách thành a + dấu)
+#
+# Code hardcode kiểu NFC
+# REAL_ESTATE_["căn hộ chung cư"]  # ă = 1 ký tự NFC
+#
+# Không normalize → không tìm thấy loại BĐS → chatbot bị lỗi
+# user_msg in REAL_ESTATE_  # False ← sai
+#
+# Sau normalize("NFKC")
+# normalize(user_msg) in normalize(REAL_ESTATE_)  # True ← đúng
+# ---------------------------------------------------------------------------
+def _norm_text(s: str) -> str:   # Chuẩn hóa chữ, đảm bảo các chữ như nhau về mặt code    
     return unicodedata.normalize("NFKC", s.strip().lower())
 
-
+# ---------------------------------------------------------------------------
+# s = "Quận 7, Bình Thạnh"
+#
+# Bước 1: NFD — tách ký tự có dấu ra thành (ký tự gốc + dấu riêng)
+# s = unicodedata.normalize("NFD", s)
+# "Quận" → Q-u-a-̣-̂-n  (ậ tách thành: a + dấu mũ + dấu nặng)
+#
+# Bước 2: Lọc bỏ category "Mn"
+# s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+# "Mn" = Mark, Nonspacing = các dấu phụ (huyền, sắc, nặng, hỏi, ngã, mũ, móc...)
+# Giữ lại: chữ cái gốc, số, khoảng trắng
+# Kết quả: "Quan 7, Binh Thanh"
+#
+# Bước 3: NFKC — compose lại, chuẩn hóa
+# return unicodedata.normalize("NFKC", s)
+# → "Quan 7, Binh Thanh"
+# ---------------------------------------------------------------------------
 def _strip_accents(s: str) -> str:
     s = unicodedata.normalize("NFD", s)
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
@@ -110,20 +140,24 @@ _DONE_SIGNALS = {
 }
 
 
-def _is_done_signal(text: str) -> bool:
+def _is_done_signal(text: str) -> bool:  # Check coi người dùng muốn đoán chưa
     t = _strip_accents(_norm_text(text))
     return t in _DONE_SIGNALS or _norm_text(text) in _DONE_SIGNALS
 
 
-def _find_district_code(address_text: str) -> Optional[int]:
+def _find_district_code(address_text: str) -> Optional[int]:  # Kiểm tra có loại nhà đất nào trong tin nhắn không
     t = _strip_accents(_norm_text(address_text))
     for k, code in ADDRESS_.items():
         if _strip_accents(_norm_text(k)) in t:
             return code
     return None
 
+# Điền nếu đã có loại nhà đất text mà chưa có loại nhà đất code
+def _fill_if_has_property_type_text(): 
+    pass
 
-def _parse_real_estate(text: str) -> Optional[int]:
+# Tìm code của loại nhà đất
+def _parse_real_estate(text: str) -> Optional[int]:  
     t = _strip_accents(_norm_text(text))
     # thử parse số
     m = re.search(r"(\d+)", t)
@@ -137,11 +171,16 @@ def _parse_real_estate(text: str) -> Optional[int]:
     return None
 
 
-def _extract_from_text(text: str) -> dict:
+# ---------------------------
+# Lọc tin nhắn
+# Hàm trả vê dạng dict data đã lọc từ tin nhắn người dùng
+# ---------------------------
+def _extract_from_text(text: str) -> dict:   
     result: dict = {}
     t = _norm_text(text)
     t_na = _strip_accents(t)
 
+    # Lọc diện tích
     m = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:m2|m²|met vuong|mét vuông)", t_na)
     if m:
         try:
@@ -149,16 +188,19 @@ def _extract_from_text(text: str) -> dict:
         except ValueError:
             pass
 
+    # Lọc loại nhà đất
     for name in sorted(REAL_ESTATE_, key=len, reverse=True):
         if _strip_accents(_norm_text(name)) in t_na:
             result["real_estate"] = name
             break
 
+    # Lọc quận
     for district in sorted(ADDRESS_, key=len, reverse=True):
         if _strip_accents(_norm_text(district)) in t_na:
             result["district_text"] = district
             break
 
+    # Lọc số tầng
     m = re.search(r"(\d+)\s*(?:tang|lau|tầng|lầu)\b", t_na)
     if m:
         try:
@@ -166,6 +208,7 @@ def _extract_from_text(text: str) -> dict:
         except ValueError:
             pass
 
+    # Lọc phòng ngủ
     m = re.search(r"(\d+)\s*(?:phong ngu|phòng ngủ|\bpn\b)", t_na)
     if m:
         try:
@@ -173,6 +216,7 @@ def _extract_from_text(text: str) -> dict:
         except ValueError:
             pass
 
+    # Lọc mặt tiền
     m = re.search(r"(?:mat tien|mặt tiền|ngang)\s*(\d+(?:[.,]\d+)?)\s*m\b", t_na)
     if m:
         try:
@@ -183,6 +227,7 @@ def _extract_from_text(text: str) -> dict:
     return result
 
 
+# Thông tin nào còn thiếu
 def _missing_required(state: ChatState) -> list[str]:
     missing = []
     if state.loai_nha_dat is None:
@@ -197,7 +242,7 @@ def _missing_required(state: ChatState) -> list[str]:
         missing.append("tọa độ (geocoding)")
     return missing
 
-
+# Chạy llm lọc thông tin
 def _llm_extract(llm: OpenAI, llm_model: str, user_text: str) -> dict:
     prompt_path = os.path.join(os.path.dirname(__file__), "..", "prompt.txt")
     try:
@@ -249,6 +294,7 @@ def _llm_extract(llm: OpenAI, llm_model: str, user_text: str) -> dict:
                  "area_m2", "floors", "bedrooms", "frontage_m"]}}
 
 
+# llm hỏi thông tin thêm về loại nhà đất mà người dùng đang hướng tới
 def _llm_converse(llm: OpenAI, llm_model: str, state: ChatState) -> str:
     loai = state.loai_nha_dat
     loai_name = next((n for n, c in REAL_ESTATE_.items() if c == loai), None)
@@ -317,6 +363,7 @@ def _llm_converse(llm: OpenAI, llm_model: str, state: ChatState) -> str:
         return "Mình đã có đủ thông tin. Gõ ok để tiến hành dự đoán nhé!"
 
 
+# Giải thích về giá và các loại thông tin đã có
 def _explain_prediction(llm: OpenAI, llm_model: str, state: ChatState,
                         price_per_m2: float, total_price: float) -> str:
     from app.service.predict_service import haversine
@@ -357,6 +404,7 @@ def _explain_prediction(llm: OpenAI, llm_model: str, state: ChatState,
         return ""
 
 
+# hợp nhất thông tin đã extract được với state để cập nhật dữ liệu muốn dự đoán
 def _update_state_from_merged(state: ChatState, merged: dict, median_series=None):
     if merged.get("real_estate"):
         loai = _parse_real_estate(str(merged["real_estate"]))
@@ -373,10 +421,7 @@ def _update_state_from_merged(state: ChatState, merged: dict, median_series=None
                     state.auto_filled.update({"so_tang", "phong_ngu"})
 
     if merged.get("address_text"):
-        new_address = str(merged["address_text"]).strip()
-        if new_address != state.dia_chi_text:
-            state.is_update_address = True
-        state.dia_chi_text = new_address
+        state.dia_chi_text = str(merged["address_text"]).strip()
 
     district_text = merged.get("district_text")
     if district_text:
@@ -429,6 +474,10 @@ def _update_state_from_merged(state: ChatState, merged: dict, median_series=None
 
 # ---------------------------------------------------------------------------
 # Endpoint
+- Xóa các session hết hạn. 
+- Trích xuất tin nhắn từ người dùng qua llm và extract
+- lọc xong thì merge lại
+- Lấy thông tin tọa độ
 # ---------------------------------------------------------------------------
 
 @router.post("")
@@ -484,13 +533,12 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
         _update_state_from_merged(state, py)
 
     # Geocode
-    if state.dia_chi_text and state.is_update_address:
+    if state.dia_chi_text and (state.toa_do_x is None or state.toa_do_y is None):
         geo = get_coordinates_from_goong(state.dia_chi_text)
         if geo:
             state.last_geocoded_address = geo.get("address")
             state.toa_do_x = geo.get("x")
             state.toa_do_y = geo.get("y")
-        state.is_update_address = False
 
     user_done = force_done or bool((llm_out or {}).get("user_done", False))
 
