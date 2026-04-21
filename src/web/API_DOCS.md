@@ -13,9 +13,10 @@
 3. [EDA — Phân tích dữ liệu](#3-eda--phân-tích-dữ-liệu)
 4. [Feature Importance](#4-feature-importance)
 5. [Chat — Chatbot AI](#5-chat--chatbot-ai)
-6. [Enums & Mapping](#6-enums--mapping)
-7. [Error Codes](#7-error-codes)
-8. [Gợi ý luồng Frontend](#8-gợi-ý-luồng-frontend)
+6. [Geocode — Chuyển đổi địa chỉ](#6-geocode--chuyển-đổi-địa-chỉ)
+7. [Enums & Mapping](#7-enums--mapping)
+8. [Error Codes](#8-error-codes)
+9. [Gợi ý luồng Frontend](#9-gợi-ý-luồng-frontend)
 
 ---
 
@@ -412,7 +413,52 @@ Bot:  "Kết quả: 85.3 triệu/m², tổng ~6.82 tỷ VND..."
 
 ---
 
-## 6. Enums & Mapping
+## 6. Geocode — Chuyển đổi địa chỉ
+
+### `GET /geocode`
+
+Chuyển đổi địa chỉ tiếng Việt sang tọa độ (latitude/longitude) thông qua Goong Maps API. Endpoint này được chatbot gọi nội bộ, nhưng frontend cũng có thể dùng để hỗ trợ người dùng nhập địa chỉ tự nhiên thay vì nhập tọa độ thủ công.
+
+**Query Parameters:**
+
+| Param | Type | Bắt buộc | Mô tả |
+|-------|------|----------|-------|
+| `address` | string | ✅ | Địa chỉ tiếng Việt (ví dụ: "123 Nguyễn Hữu Thọ, Quận 7, TP.HCM") |
+
+**Ví dụ:**
+```bash
+GET /geocode?address=123%20Nguy%E1%BB%85n%20H%E1%BB%AFu%20Th%E1%BB%8D%2C%20Qu%E1%BA%ADn%207
+```
+
+**Response `200` — Thành công:**
+```json
+{
+  "address": "123 Nguyễn Hữu Thọ, Phường Tân Hưng, Quận 7, Thành phố Hồ Chí Minh",
+  "x": 10.7308,
+  "y": 106.7178
+}
+```
+
+| Field | Type | Mô tả |
+|-------|------|-------|
+| `address` | string | Địa chỉ đã được chuẩn hóa bởi Goong |
+| `x` | float | Latitude (vĩ độ) — dùng cho field `tọa độ x` của `/predict` |
+| `y` | float | Longitude (kinh độ) — dùng cho field `tọa độ y` của `/predict` |
+
+**Response `200` — Không tìm thấy địa chỉ:**
+```json
+{
+  "error": "Unable to geocode the provided address."
+}
+```
+
+> **Lưu ý:** Khi Goong không tìm được tọa độ, API vẫn trả về HTTP `200` nhưng body chứa field `error`. Frontend cần kiểm tra sự tồn tại của field `error` thay vì chỉ dựa vào status code.
+
+> **Frontend tip:** Dùng endpoint này để tích hợp tính năng "nhập địa chỉ → tự động điền tọa độ" trong form dự đoán, tránh bắt người dùng tự tra tọa độ.
+
+---
+
+## 7. Enums & Mapping
 
 ### Loại Bất động sản
 
@@ -424,7 +470,7 @@ Bot:  "Kết quả: 85.3 triệu/m², tổng ~6.82 tỷ VND..."
 | `4` | Nhà mặt phố | |
 | `7` | Bán đất | Không hỏi phòng ngủ, số tầng |
 
-### Quận/Huyện
+### Quận/Huyện (24 quận/huyện TP.HCM)
 
 | Code | Tên | Code | Tên |
 |------|-----|------|-----|
@@ -443,7 +489,7 @@ Bot:  "Kết quả: 85.3 triệu/m², tổng ~6.82 tỷ VND..."
 
 ---
 
-## 7. Error Codes
+## 8. Error Codes
 
 | Code | Tình huống | Xử lý frontend |
 |------|-----------|----------------|
@@ -455,7 +501,7 @@ Bot:  "Kết quả: 85.3 triệu/m², tổng ~6.82 tỷ VND..."
 
 ---
 
-## 8. Gợi ý luồng Frontend
+## 9. Gợi ý luồng Frontend
 
 ### Dashboard (trang chính)
 
@@ -538,3 +584,4 @@ if (String(run_id) !== cached) {
 | `GOONG_API_KEY` | ✅ | Goong geocoding (địa chỉ → tọa độ, dùng trong chatbot) |
 | `SQLALCHEMY_DATABASE_URL` | ❌ | Mặc định SQLite. Ví dụ MySQL: `mysql+pymysql://user:pass@host/db` |
 | `OPENAI_MODEL` | ❌ | Mặc định `gpt-4o-mini` |
+| `API_PARTNER` | ✅ | URL endpoint của partner API để lấy dữ liệu BĐS mới khi retrain |

@@ -14,7 +14,7 @@ from app.db.models import (
     PriceDistribution,
     TrainingRun,
 )
-from app.retrain.retrain import RetrainService
+from app.retrain.retrain import RetrainService, RetrainService1
 
 # Ánh xạ label bin → (min_range, max_range)
 _BIN_RANGES = {
@@ -122,7 +122,8 @@ class RetrainOrchestrator:
 
         try:
             # 1. Check new rows
-            new_rows = self.check_new_rows(data_path)
+            # new_rows = self.check_new_rows(data_path)
+            new_rows = 100
             import pandas as _pd
             total_rows = len(_pd.read_csv(data_path))
 
@@ -144,7 +145,7 @@ class RetrainOrchestrator:
             self.db.refresh(run)
 
             # 3. Train
-            retrain = RetrainService(data_path, self.db)
+            retrain = RetrainService1(data_path, self.db)
             result = retrain.retrain_model()
 
             pipeline = result["pipeline"]

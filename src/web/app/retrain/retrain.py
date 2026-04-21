@@ -6,6 +6,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import mean_absolute_error, r2_score, mean_squared_error
 import joblib as jb
+import logging
 
 REAL_ESTATE_ = {
     'căn hộ chung cư': 0,
@@ -46,6 +47,7 @@ def haversine(lat1, lon1, lat2=HCM_LAT, lon2=HCM_LON):
     return R * 2 * np.arcsin(np.sqrt(a))
 
 
+
 class RetrainService:
     def __init__(self, file_path: str, db_session):
         self.db_session = db_session
@@ -60,53 +62,64 @@ class RetrainService:
         # Bỏ cột giá tuyệt đối để tránh data leakage
         self.df.drop(columns=["giá"], inplace=True)
 
+    def __set_median_none_in_column(self, df: pd.DataFrame, column_names: list[str]) -> pd.DataFrame:
+        """
+        Giữ đúng logic notebook:
+        - Fill NaN theo median của chính dataframe đang truyền vào.
+        """
+        for column_name in column_names:
+            median_value = df[column_name].median()
+            df[column_name] = df[column_name].fillna(median_value)
+
     def __preprocess_data(self):
-        # 1. Loại bỏ trùng lặp
-        self.df.drop_duplicates(inplace=True)
+        # 1) Làm sạch cơ bản giống notebook (trước split)
+        self.df = self.df.drop_duplicates()
 
-        # 2. Loại bỏ loại BĐS ít dữ liệu / không hỗ trợ
-        remove_types = {
-            REAL_ESTATE_["chung cư mini, căn hộ dịch vụ"],
-            REAL_ESTATE_["shophouse, nhà phố thương mại"],
-            REAL_ESTATE_["đất nền dự án"],
-            REAL_ESTATE_["condotel"],
-            REAL_ESTATE_["kho nhà xưởng"],
-        }
-        self.df = self.df[~self.df["loại nhà đất"].isin(remove_types)]
+        # Notebook chỉ loại 3 nhóm: 1, 5, 6
+        mask_remove_real_estate = (
+            (self.df["loại nhà đất"] == REAL_ESTATE_["shophouse, nhà phố thương mại"])
+            | (self.df["loại nhà đất"] == REAL_ESTATE_["chung cư mini, căn hộ dịch vụ"])
+            | (self.df["loại nhà đất"] == REAL_ESTATE_["đất nền dự án"])
+        )
+        self.df.drop(self.df[mask_remove_real_estate].index, inplace=True)
+        # Lọc ngoài TP.HCM
+        remove_out_of_city = (
+            (self.df["tọa độ y"] < 106.1) | (self.df["tọa độ y"] > 106.8)
+            | (self.df["tọa độ x"] < 10.38) | (self.df["tọa độ x"] > 11.10)
+        )
+        self.df.drop(self.df[remove_out_of_city].index, inplace=True)
+        
 
-        # 3. Loại bỏ dữ liệu ngoài phạm vi TP.HCM (tọa độ đã chuẩn hóa về độ thực)
-        self.df = self.df[
-            self.df["tọa độ x"].between(10.38, 11.10) &
-            self.df["tọa độ y"].between(106.1, 106.8)
-        ]
-
-        # 4. Loại bỏ dữ liệu pháp lý không hợp lệ
-        self.df = self.df[self.df["pháp lý"] != 2]
-        self.df = self.df[self.df["pháp lý"].notna()]
+        # Lọc pháp lý + bỏ cột pháp lý
+        self.df = self.df[(self.df["pháp lý"] != 2) & (self.df["pháp lý"].notna())].copy()
         self.df.drop(columns=["pháp lý"], inplace=True)
 
-        # 5. Lọc outlier trên toàn bộ df TRƯỚC khi split
-        self.df = self.df[self.df["phòng ngủ"] < 11]
-        self.df = self.df[self.df["mặt tiền"] <= 30]
-        self.df = self.df[self.df["giá/m2"] <= 500]
-        self.df = self.df[self.df["diện tích"].between(15, 500)]
-        self.df = self.df.reset_index(drop=True)
+        # 2) Split train/test stratified theo khoảng cách trung tâm
+        self.train_set, self.test_set = self.__split_data()
+        
 
-        # 6. Tính dữ liệu cho biểu đồ (sau khi đã clean hoàn toàn)
+        # 3) Fill median độc lập cho train/test như notebook
+        self.__set_median_none_in_column(
+            self.train_set,
+            ["số tầng", "phòng ngủ", "mặt tiền"],
+        )
+        self.__set_median_none_in_column(
+            self.test_set,
+            ["số tầng", "phòng ngủ", "mặt tiền"],
+        )
+
+        # 4) Outlier handling chỉ trên train_set (theo notebook: housing_2 = housing.copy()
+        self.train_set = self.train_set[self.train_set["phòng ngủ"] < 11]
+        self.train_set = self.train_set[self.train_set["mặt tiền"] <= 30]
+        self.train_set = self.train_set[self.train_set["giá/m2"] <= 500]
+        self.train_set = self.train_set[self.train_set["diện tích"]<=500]
+        self.train_set = self.train_set[self.train_set["diện tích"]>=15]
+
+        # 5) Dữ liệu EDA/report dùng từ train đã lọc (housing_2)
+        self.df = self.train_set.copy()
         data_price_distribution = self.__compute_price_distribution()
         data_scatter_plot = self.df[["tọa độ x", "tọa độ y", "diện tích", "giá/m2"]].copy()
         data_district_stats = self.__compute_district_stats()
-
-        # 7. Split train/test
-        self.train_set, self.test_set = self.__split_data()
-
-        # 8. Fill median từ train_set, áp dụng cho cả hai (tránh data leakage từ test)
-        for col in ["mặt tiền", "phòng ngủ", "số tầng"]:
-            median_val = self.train_set[col].median()
-            self.train_set = self.train_set.copy()
-            self.test_set = self.test_set.copy()
-            self.train_set[col] = self.train_set[col].fillna(median_val)
-            self.test_set[col] = self.test_set[col].fillna(median_val)
 
         return data_price_distribution, data_scatter_plot, data_district_stats
 
@@ -133,10 +146,17 @@ class RetrainService:
             bins=[0., 5., 10., 15., np.inf],
             labels=[1, 2, 3, 4]
         )
-        splitter = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-        train_idx, test_idx = next(splitter.split(df, df["distance_center_cat"]))
-        train_set = df.iloc[train_idx].drop(columns=["distance_center_cat"]).reset_index(drop=True)
-        test_set = df.iloc[test_idx].drop(columns=["distance_center_cat"]).reset_index(drop=True)
+        # Giống notebook: n_splits=10 và lấy split đầu tiên
+        splitter = StratifiedShuffleSplit(n_splits=10, test_size=0.2, random_state=42)
+        strat_splits = []
+        for train_idx, test_idx in splitter.split(df, df["distance_center_cat"]):
+            strat_train_set_n = df.iloc[train_idx].copy()
+            strat_test_set_n = df.iloc[test_idx].copy()
+            strat_splits.append((strat_train_set_n, strat_test_set_n))
+
+        train_set, test_set = strat_splits[0]
+        train_set = train_set.drop(columns=["distance_center_cat"]).reset_index(drop=True)
+        test_set = test_set.drop(columns=["distance_center_cat"]).reset_index(drop=True)
         return train_set, test_set
 
     def __evaluate(self, pipeline, X_test: pd.DataFrame, y_test: pd.Series) -> tuple:
@@ -158,10 +178,8 @@ class RetrainService:
         pipeline = Pipeline([
             ("imputer", SimpleImputer(strategy="median")),
             ("model", RandomForestRegressor(
-                n_estimators=300,
-                max_depth=30,
-                min_samples_split=2,
-                min_samples_leaf=1,
+                # Đồng bộ với notebook1.ipynb
+                n_estimators=200,
                 random_state=42,
             ))
         ])
@@ -184,4 +202,6 @@ class RetrainService:
             "rmse": rmse,
             "mae": mae,
             "r2": r2,
+            "train_rows": int(len(self.train_set)),
+            "test_rows": int(len(self.test_set)),
         }
